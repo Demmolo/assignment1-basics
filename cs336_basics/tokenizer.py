@@ -1,9 +1,61 @@
 from collections import defaultdict
 import json
 import regex as re
+from concurrent.futures import ProcessPoolExecutor
 
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+
+import os
+from typing import BinaryIO
+
+def find_chunk_boundaries(
+    file: BinaryIO, 
+    desired_num_chunks: int, 
+    split_special_token: bytes
+) -> list[int]:
+    """
+    Chunk the file into parts that can be counted independently.
+    May return fewer chunks if the boundaries end up overlapping.
+    """
+    assert isinstance(split_special_token, bytes), (
+        "Must represent special token as a bytestring"
+    )
+
+    # Get total file size in bytes
+    file.seek(0, os.SEEK_END)
+    file_size = file.tell()
+    file.seek(0)
+
+    chunk_size = file_size // desired_num_chunks
+
+    # Initial guesses for chunk boundary locations, uniformly spaced
+    # Chunks start on previous index, don't include last index
+    chunk_boundaries = [i * chunk_size for i in range(desired_num_chunks + 1)]
+    chunk_boundaries[-1] = file_size
+
+    mini_chunk_size = 4096  # Read ahead by 4k bytes at a time
+
+    for bi in range(1, len(chunk_boundaries) - 1):
+        initial_position = chunk_boundaries[bi]
+        file.seek(initial_position)  # Start at boundary guess
+        while True:
+            mini_chunk = file.read(mini_chunk_size)  # Read a mini chunk
+
+            # If EOF, this boundary should be at the end of the file
+            if mini_chunk == b"":
+                chunk_boundaries[bi] = file_size
+                break
+
+            # Find the special token in the mini chunk
+            found_at = mini_chunk.find(split_special_token)
+            if found_at != -1:
+                chunk_boundaries[bi] = initial_position + found_at
+                break
+            initial_position += mini_chunk_size
+
+    # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
+    return sorted(set(chunk_boundaries))
 
 class Tokenizer:
 
@@ -24,18 +76,44 @@ class Tokenizer:
             raise SystemExit
         self.vocabulary[len(self.vocabulary)] = token
 
+    def process_chunk(data: bytes, split_pattern: str) -> dict[tuple[bytes], int]:
+        tokens = defaultdict(int)
+        for chunk in re.split(split_pattern, data.decode("utf-8", errors="replace")):
+            for token in re.finditer(PAT, chunk):
+                byte_tuple = tuple([bytes([t]) for t in token.group(0).encode("utf-8")])
+                tokens[byte_tuple] += 1
+        return tokens
 
-    def tokenize(self, text: str, verbose=False):
+    def tokenize(self, file: BinaryIO, parallelize=False, verbose=False):
         tokens: dict[tuple[bytes], int] = defaultdict(int)
 
         split_pattern = '|'.join(map(re.escape, self.special_tokens))
         
         print("Pretokenizing...")
-        
-        for chunk in re.split(split_pattern, text):
-            # Pretokenize
-            for token in re.finditer(PAT, chunk):
-                tokens[tuple([bytes([t]) for t in token.group(0).encode('utf-8')]) ] += 1
+
+        if parallelize:
+            # Assume file is a BinaryIO
+            file.seek(0)
+            boundaries = find_chunk_boundaries(file, desired_num_chunks=os.cpu_count(), split_special_token=self.special_tokens[0].encode("utf-8"))
+
+            with ProcessPoolExecutor() as executor:
+                futures = []
+                for i in range(len(boundaries) - 1):
+                    start = boundaries[i]
+                    end = boundaries[i + 1]
+                    file.seek(start)
+                    chunk_data = file.read(end - start)
+                    futures.append(executor.submit(Tokenizer.process_chunk, chunk_data, split_pattern))
+
+                for fut in futures:
+                    chunk_tokens = fut.result()
+                    for k, v in chunk_tokens.items():
+                        tokens[k] += v
+        else:
+            file.seek(0)
+            for chunk in re.split(split_pattern, file.read().decode("utf-8", errors="replace")):
+                for token in re.finditer(PAT, chunk):
+                    tokens[tuple([bytes([t]) for t in token.encode("utf-8")])] += 1
 
         print("Pretokenization done")
 
@@ -124,8 +202,8 @@ class Tokenizer:
 
 def tokenize_tiny_stories():
     tokenizer = Tokenizer(vocab_length=10000)
-    with open("data/TinyStoriesV2-GPT4-train.txt") as data:
-        vocab, merges = tokenizer.tokenize(data.read(), verbose=True)
+    with open("data/TinyStoriesV2-GPT4-valid.txt", "rb") as data:
+        vocab, merges = tokenizer.tokenize(data, verbose=True, parallelize=True)
 
     tokenizer.serialize_vocabulary("tiny_stories_vocab.json")
 
