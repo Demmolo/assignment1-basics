@@ -591,7 +591,7 @@ def run_train_bpe(
     from cs336_basics.tokenizer import Tokenizer
     tokenizer = Tokenizer(vocab_length=vocab_size, special_tokens=special_tokens)
 
-    with open(input_path) as f:
-        vocab, merges = tokenizer.tokenize(f.read())
+    with open(input_path, "rb") as f:
+        vocab, merges = tokenizer.tokenize(f)
 
     return vocab, merges

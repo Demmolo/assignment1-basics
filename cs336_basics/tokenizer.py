@@ -78,13 +78,13 @@ class Tokenizer:
 
     def process_chunk(data: bytes, split_pattern: str) -> dict[tuple[bytes], int]:
         tokens = defaultdict(int)
-        for chunk in re.split(split_pattern, data.decode("utf-8", errors="replace")):
+        for chunk in re.split(split_pattern, data):
             for token in re.finditer(PAT, chunk):
                 byte_tuple = tuple([bytes([t]) for t in token.group(0).encode("utf-8")])
                 tokens[byte_tuple] += 1
         return tokens
 
-    def tokenize(self, file: BinaryIO, parallelize=False, verbose=False):
+    def tokenize(self, file: BinaryIO, parallelize=True, verbose=False):
         tokens: dict[tuple[bytes], int] = defaultdict(int)
 
         split_pattern = '|'.join(map(re.escape, self.special_tokens))
@@ -98,11 +98,10 @@ class Tokenizer:
 
             with ProcessPoolExecutor() as executor:
                 futures = []
-                for i in range(len(boundaries) - 1):
-                    start = boundaries[i]
-                    end = boundaries[i + 1]
+                for start, end in zip(boundaries[:-1], boundaries[1:]):
                     file.seek(start)
-                    chunk_data = file.read(end - start)
+                    chunk_data = file.read(end - start).decode("utf-8", errors="ignore")
+
                     futures.append(executor.submit(Tokenizer.process_chunk, chunk_data, split_pattern))
 
                 for fut in futures:
@@ -111,16 +110,16 @@ class Tokenizer:
                         tokens[k] += v
         else:
             file.seek(0)
-            for chunk in re.split(split_pattern, file.read().decode("utf-8", errors="replace")):
+            for chunk in re.split(split_pattern, file.read().decode("utf-8", errors="ignore")):
                 for token in re.finditer(PAT, chunk):
-                    tokens[tuple([bytes([t]) for t in token.encode("utf-8")])] += 1
+                    tokens[tuple([bytes([t]) for t in token.group(0).encode("utf-8")])] += 1
+
+            # for chunk in re.split(split_pattern, text):
+            #     # Pretokenize
+            #     for token in re.finditer(PAT, chunk):
+            #         tokens[tuple([bytes([t]) for t in token.group(0).encode('utf-8')]) ] += 1
 
         print("Pretokenization done")
-
-        # print([(bytes(k).decode('utf8'), v) for k, v in tokens.items()])
-
-        ##### TESTING
-        # tokens = {"low".encode('utf-8'): 5, "lower".encode('utf-8'): 2, "widest".encode('utf-8'): 3, "newest".encode('utf-8'): 6}
         
         merges = []
 
