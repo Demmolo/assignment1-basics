@@ -201,8 +201,15 @@ class Tokenizer:
 
 def tokenize_tiny_stories():
     tokenizer = Tokenizer(vocab_length=10000)
-    with open("data/TinyStoriesV2-GPT4-valid.txt", "rb") as data:
-        vocab, merges = tokenizer.tokenize(data, verbose=True, parallelize=True)
+    with open("data/TinyStoriesV2-GPT4-train.txt", "rb") as data:
+        vocab, merges = tokenizer.tokenize(data.read(), verbose=True)
+
+    tokenizer.serialize_vocabulary("tiny_stories_vocab.json")
+
+def tokenize_owt():
+    tokenizer = Tokenizer(vocab_length=32000)
+    with open("data/owt_train.txt", "rb") as data:
+        vocab, merges = tokenizer.tokenize(data.read(), verbose=True)
 
     tokenizer.serialize_vocabulary("tiny_stories_vocab.json")
 
