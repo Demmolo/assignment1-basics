@@ -58,6 +58,18 @@ def find_chunk_boundaries(
     # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
     return sorted(set(chunk_boundaries))
 
+def process_chunk(file_path, start, end, split_pattern: str) -> dict[tuple[bytes], int]:
+    with open(file_path, "rb") as file:
+        file.seek(start)
+        data = file.read(end - start).decode("utf-8", errors="ignore")
+
+    tokens = defaultdict(int)
+    for chunk in re.split(split_pattern, data):
+        for token in re.finditer(PAT, chunk):
+            byte_tuple = tuple([bytes([t]) for t in token.group(0).encode("utf-8")])
+            tokens[byte_tuple] += 1
+    return tokens
+
 class Tokenizer:
 
     def __init__(self, vocab_length=512, special_tokens=["<|endoftext|>"]):
@@ -77,26 +89,10 @@ class Tokenizer:
             raise SystemExit
         self.vocabulary[len(self.vocabulary)] = token
 
-    @staticmethod
-    def process_chunk(file_path, start, end, split_pattern: str) -> dict[tuple[bytes], int]:
-        with open(file_path, "rb") as file:
-            file.seek(start)
-            data = file.read(end - start).decode("utf-8", errors="ignore")
-
-        tokens = defaultdict(int)
-        for chunk in re.split(split_pattern, data):
-            for token in re.finditer(PAT, chunk):
-                byte_tuple = tuple([bytes([t]) for t in token.group(0).encode("utf-8")])
-                tokens[byte_tuple] += 1
-        return tokens
-
-    def tokenize(self, file_path: str, parallelize=True, verbose=False):
+    def pretokenize(self, file_path, parallelize):
         tokens: dict[tuple[bytes], int] = defaultdict(int)
-
         split_pattern = '|'.join(map(re.escape, self.special_tokens))
         
-        print("Pretokenizing...")
-
         if parallelize:
             # Assume file is a BinaryIO
             with open(file_path, "rb") as file:
@@ -109,7 +105,7 @@ class Tokenizer:
                     # file.seek(start)
                     # chunk_data = file.read(end - start).decode("utf-8", errors="ignore")
 
-                    futures.append(executor.submit(Tokenizer.process_chunk, file_path, start, end, split_pattern))
+                    futures.append(executor.submit(process_chunk, file_path, start, end, split_pattern))
 
                 for fut in tqdm.tqdm(futures):
                     chunk_tokens = fut.result()
@@ -121,11 +117,12 @@ class Tokenizer:
                     for token in re.finditer(PAT, chunk):
                         tokens[tuple([bytes([t]) for t in token.group(0).encode("utf-8")])] += 1
 
-            # for chunk in re.split(split_pattern, text):
-            #     # Pretokenize
-            #     for token in re.finditer(PAT, chunk):
-            #         tokens[tuple([bytes([t]) for t in token.group(0).encode('utf-8')]) ] += 1
+        
+        return tokens
 
+    def tokenize(self, file_path: str, parallelize=True, verbose=False):
+        print("Pretokenizing...")
+        tokens = self.pretokenize(file_path, parallelize)
         print("Pretokenization done")
         
         merges = []
@@ -163,9 +160,10 @@ class Tokenizer:
             for k, v in tokens.items():
                 new = []
                 i = 0
-                while i < len(k):
+                len_k = len(k)
+                while i < len_k:
                     # Try to match a pair
-                    if i < len(k) - 1 and (k[i], k[i+1]) == max_pair:
+                    if i < len_k - 1 and (k[i], k[i+1]) == max_pair:
                         fused = b''.join((k[i], k[i+1]))
                         new.append(fused)
 
@@ -177,7 +175,7 @@ class Tokenizer:
                             counts[new_prev] += v
 
                         # Update next pair count (will be created in next iteration if i+2 exists)
-                        if i < len(k) - 2:
+                        if i < len_k - 2:
                             next_ = (k[i+1], k[i+2])
                             counts[next_] -= v
                             new_next = (fused, k[i+2])
