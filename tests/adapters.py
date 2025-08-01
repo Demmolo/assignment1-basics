@@ -589,9 +589,8 @@ def run_train_bpe(
                 Merges are ordered by order of creation.
     """
     from cs336_basics.tokenizer import Tokenizer
+    
     tokenizer = Tokenizer(vocab_length=vocab_size, special_tokens=special_tokens)
-
-    with open(input_path, "rb") as f:
-        vocab, merges = tokenizer.tokenize(f)
+    vocab, merges = tokenizer.tokenize(input_path)
 
     return vocab, merges

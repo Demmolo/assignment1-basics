@@ -1,6 +1,7 @@
 from collections import defaultdict
 import json
 import regex as re
+import tqdm
 from concurrent.futures import ProcessPoolExecutor
 
 
@@ -76,7 +77,12 @@ class Tokenizer:
             raise SystemExit
         self.vocabulary[len(self.vocabulary)] = token
 
-    def process_chunk(data: bytes, split_pattern: str) -> dict[tuple[bytes], int]:
+    @staticmethod
+    def process_chunk(file_path, start, end, split_pattern: str) -> dict[tuple[bytes], int]:
+        with open(file_path, "rb") as file:
+            file.seek(start)
+            data = file.read(end - start).decode("utf-8", errors="ignore")
+
         tokens = defaultdict(int)
         for chunk in re.split(split_pattern, data):
             for token in re.finditer(PAT, chunk):
@@ -84,7 +90,7 @@ class Tokenizer:
                 tokens[byte_tuple] += 1
         return tokens
 
-    def tokenize(self, file: BinaryIO, parallelize=True, verbose=False):
+    def tokenize(self, file_path: str, parallelize=True, verbose=False):
         tokens: dict[tuple[bytes], int] = defaultdict(int)
 
         split_pattern = '|'.join(map(re.escape, self.special_tokens))
@@ -93,26 +99,27 @@ class Tokenizer:
 
         if parallelize:
             # Assume file is a BinaryIO
-            file.seek(0)
-            boundaries = find_chunk_boundaries(file, desired_num_chunks=os.cpu_count(), split_special_token=self.special_tokens[0].encode("utf-8"))
+            with open(file_path, "rb") as file:
+                file.seek(0)
+                boundaries = find_chunk_boundaries(file, desired_num_chunks=os.cpu_count() * 8, split_special_token=self.special_tokens[0].encode("utf-8"))
 
-            with ProcessPoolExecutor() as executor:
+            with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
                 futures = []
                 for start, end in zip(boundaries[:-1], boundaries[1:]):
-                    file.seek(start)
-                    chunk_data = file.read(end - start).decode("utf-8", errors="ignore")
+                    # file.seek(start)
+                    # chunk_data = file.read(end - start).decode("utf-8", errors="ignore")
 
-                    futures.append(executor.submit(Tokenizer.process_chunk, chunk_data, split_pattern))
+                    futures.append(executor.submit(Tokenizer.process_chunk, file_path, start, end, split_pattern))
 
-                for fut in futures:
+                for fut in tqdm.tqdm(futures):
                     chunk_tokens = fut.result()
                     for k, v in chunk_tokens.items():
                         tokens[k] += v
         else:
-            file.seek(0)
-            for chunk in re.split(split_pattern, file.read().decode("utf-8", errors="ignore")):
-                for token in re.finditer(PAT, chunk):
-                    tokens[tuple([bytes([t]) for t in token.group(0).encode("utf-8")])] += 1
+            with open(file_path, "rb") as file:
+                for chunk in re.split(split_pattern, file.read().decode("utf-8", errors="ignore")):
+                    for token in re.finditer(PAT, chunk):
+                        tokens[tuple([bytes([t]) for t in token.group(0).encode("utf-8")])] += 1
 
             # for chunk in re.split(split_pattern, text):
             #     # Pretokenize
@@ -181,7 +188,7 @@ class Tokenizer:
                         new.append(k[i])
                         i += 1
 
-                if new:
+                if len(new) > 1:
                     tokens_new[tuple(new)] = v
                 
                 # if max_pair_fused == b'ning' and k != tuple(new):
@@ -200,22 +207,25 @@ class Tokenizer:
 
 
 def tokenize_tiny_stories():
+    file_path = "data/TinyStoriesV2-GPT4-train.txt"
+
     tokenizer = Tokenizer(vocab_length=10000)
-    with open("data/TinyStoriesV2-GPT4-train.txt", "rb") as data:
-        vocab, merges = tokenizer.tokenize(data.read(), verbose=True)
+    vocab, merges = tokenizer.tokenize(file_path, verbose=True)
 
     tokenizer.serialize_vocabulary("tiny_stories_vocab.json")
 
 def tokenize_owt():
+    file_path = "data/owt_train.txt"
+    
     tokenizer = Tokenizer(vocab_length=32000)
-    with open("data/owt_train.txt", "rb") as data:
-        vocab, merges = tokenizer.tokenize(data.read(), verbose=True)
+    vocab, merges = tokenizer.tokenize(file_path, verbose=True)
 
-    tokenizer.serialize_vocabulary("tiny_stories_vocab.json")
+    tokenizer.serialize_vocabulary("owt_vocab.json")
 
 if __name__ == "__main__":
 
-    tokenize_tiny_stories()
+    # tokenize_tiny_stories()
+    tokenize_owt()
 
     # tokenizer = Tokenizer(vocab_length=1000)
     # with open("data/TinyStoriesV2-GPT4-valid.txt") as data:
